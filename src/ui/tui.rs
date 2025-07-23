@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, stdout},
-    sync::{Arc, Mutex},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -54,7 +56,10 @@ pub fn spawn_input_handler(running: Arc<AtomicBool>) {
     });
 }
 
-pub fn start_ui_thread(running: Arc<AtomicBool>) {
+pub fn start_ui_thread(
+    running: Arc<AtomicBool>,
+    packet_counts: Arc<Mutex<HashMap<PacketType, usize>>>,
+) {
     let log = Arc::clone(&PACKET_LOG);
 
     thread::spawn(move || {
@@ -63,47 +68,69 @@ pub fn start_ui_thread(running: Arc<AtomicBool>) {
         let mut terminal = Terminal::new(backend).expect("Failed to create terminal");
 
         while running.load(Ordering::SeqCst) {
-            // Acquire the current packet log safely
             let lines = {
                 let log_guard = log.lock().unwrap();
                 log_guard.clone()
             };
 
-            // Draw UI
+            let counts_snapshot = {
+                let counts = packet_counts.lock().unwrap();
+                counts.clone()
+            };
+
             terminal
                 .draw(|f| {
                     let size = f.size();
-
                     let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Percentage(100)].as_ref())
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
                         .split(size);
 
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .title("Sniffy - Packet Viewer (press 'q' to quit)");
-
-                    let text = lines
+                    // Packet log panel
+                    let log_text = lines
                         .iter()
                         .rev()
                         .map(|line| line.as_str())
                         .collect::<Vec<_>>()
                         .join("\n");
 
-                    let paragraph = Paragraph::new(text)
-                        .block(block)
+                    let log_block = Paragraph::new(log_text)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Sniffy - Packet Log (press 'q' to quit)"),
+                        )
                         .style(Style::default().fg(Color::White));
 
-                    f.render_widget(paragraph, chunks[0]);
+                    f.render_widget(log_block, chunks[0]);
+
+                    // Stats panel
+                    let stats_text = if counts_snapshot.is_empty() {
+                        "No packets yet.".to_string()
+                    } else {
+                        let mut summary = String::new();
+                        for (ptype, count) in counts_snapshot.iter() {
+                            summary.push_str(&format!("{:<10} {}\n", format!("{}", ptype), count));
+                        }
+                        summary
+                    };
+
+                    let stats_block = Paragraph::new(stats_text)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Live Packet Stats"),
+                        )
+                        .style(Style::default().fg(Color::Green));
+
+                    f.render_widget(stats_block, chunks[1]);
                 })
                 .expect("Failed to draw UI");
 
             thread::sleep(Duration::from_millis(100));
         }
 
-        // Drop the terminal to release the mutable borrow on stdout before cleanup
         drop(terminal);
-
         disable_raw_mode().expect("Failed to disable raw mode");
         execute!(stdout, LeaveAlternateScreen).expect("Failed to leave alternate screen");
     });
@@ -111,7 +138,6 @@ pub fn start_ui_thread(running: Arc<AtomicBool>) {
 
 pub fn display_packet_info(info: &PacketInfo) {
     let summary = format_packet_line(info);
-
     let mut log = PACKET_LOG.lock().unwrap();
     log.push_back(summary);
     if log.len() > MAX_LINES {
@@ -131,7 +157,6 @@ pub fn print_final_summary(counts: Arc<Mutex<HashMap<PacketType, usize>>>) {
     }
 }
 
-// Helper function to format a packet line for display
 fn format_packet_line(info: &PacketInfo) -> String {
     let macs = match (&info.src_mac, &info.dst_mac) {
         (Some(src), Some(dst)) => format!("MAC {} -> {}", mac_to_str(src), mac_to_str(dst)),
