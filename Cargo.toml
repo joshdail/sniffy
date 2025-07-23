@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 pcap = "1"
 termion = "2"
+ctrlc = "3"

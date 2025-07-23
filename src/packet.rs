@@ -1,6 +1,26 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::fmt;
 
-pub fn parse_and_print_packet(data: &[u8]) -> Result<(), &'static str> {
+#[derive(Hash, Eq, PartialEq, Debug)]
+pub enum PacketType {
+    Ethernet,
+    IPv4,
+    IPv6,
+    Other(u16), // other Ethernet types
+}
+
+impl fmt::Display for PacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PacketType::Ethernet => write!(f, "Ethernet"),
+            PacketType::IPv4 => write!(f, "IPv4"),
+            PacketType::IPv6 => write!(f, "IPv6"),
+            PacketType::Other(t) => write!(f, "Other EtherType 0x{:04x}", t),
+        }
+    }
+}
+
+pub fn parse_and_print_packet(data: &[u8]) -> Result<PacketType, &'static str> {
     if data.len() < 14 {
         return Err("Packet too short for Ethernet header");
     }
@@ -14,14 +34,18 @@ pub fn parse_and_print_packet(data: &[u8]) -> Result<(), &'static str> {
     print_mac("Dst", dst_mac);
     print!("Type 0x{:04x} ", ethertype);
 
-    if ethertype == 0x0800 && data.len() >= 34 {
+    let ptype = if ethertype == 0x0800 && data.len() >= 34 {
         print_ipv4(&data[14..34]);
+        PacketType::IPv4
     } else if ethertype == 0x86DD && data.len() >= 54 {
         print_ipv6(&data[14..54]);
-    }
+        PacketType::IPv6
+    } else {
+        PacketType::Other(ethertype)
+    };
 
     println!();
-    Ok(())
+    return Ok(ptype);
 } // parse_and_print_packet
 
 fn print_mac(label: &str, mac: &[u8]) {

@@ -1,43 +1,54 @@
 mod capture;
-mod ui;
+mod core;
 mod packet;
+mod ui;
 
-use capture::{open_device_capture, prompt_and_apply_bpf_filter};
-use ui::{print_device_list, prompt_device_selection};
-use packet::parse_and_print_packet;
-use pcap::Device;
+use crate::core::capture_loop::initialize_capture;
+use crate::packet::{parse_and_print_packet, PacketType};
+use crate::core::signal::setup_ctrlc_handler;
+use crate::core::summary::print_packet_summary;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::{thread, time, process};
 
 fn main() {
-    let devices = match Device::list() {
-        Ok(dlist) => dlist,
-        Err(err) => {
-            eprintln!("Failed to list devices: {}", err);
-            return;
-        }
-    };
+    // Setup the atomic running flag for shutdown
+    let running = Arc::new(AtomicBool::new(true));
+    setup_ctrlc_handler(Arc::clone(&running));
 
-    print_device_list(&devices);
-
-    let selected_index = prompt_device_selection(&devices);
-    let device = &devices[selected_index];
-
-    println!("Using device: {}", device.name);
-
-    let mut cap = match open_device_capture(device) {
+    // Initialize capture session
+    let mut cap = match initialize_capture() {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("Failed to open device {}: {}", device.name, err);
+            eprintln!("{}", err);
             return;
         }
     };
 
-    prompt_and_apply_bpf_filter(&mut cap);
+    // Shared state for packet counts
+    let packet_counts = Arc::new(Mutex::new(HashMap::<PacketType, usize>::new()));
 
-    println!("Capturing on interface {}...", device.name);
+    println!("Capturing on interface... Press Ctrl+C to stop and see summary");
 
-    while let Ok(packet) = cap.next_packet() {
-        if let Err(err) = parse_and_print_packet(&packet.data) {
-            eprintln!("Error parsing packet: {}", err);
+    // Capture loop: runs while running flag is true
+    while running.load(Ordering::SeqCst) {
+        if let Ok(packet) = cap.next_packet() {
+            match parse_and_print_packet(&packet.data) {
+                Ok(ptype) => {
+                    let mut counts = packet_counts.lock().unwrap();
+                    *counts.entry(ptype).or_insert(0) += 1;
+                }
+                Err(err) => eprintln!("Error parsing packet: {}", err),
+            }
+        } else {
+            // Sleep briefly to avoid busy waiting if no packet available
+            thread::sleep(time::Duration::from_millis(10));
         }
     }
-} // main
+
+    // After Ctrl+C triggered, print summary and exit
+    print_packet_summary(Arc::clone(&packet_counts));
+
+    process::exit(0);
+}
