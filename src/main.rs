@@ -4,13 +4,17 @@ mod packet;
 mod ui;
 
 use crate::core::capture_loop::initialize_capture;
-use crate::packet::{parse_and_print_packet, PacketType};
 use crate::core::signal::setup_ctrlc_handler;
 use crate::core::summary::print_packet_summary;
+use crate::packet::{parse_and_print_packet, PacketType};
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::{thread, time, process};
+use pcap;
 
 fn main() {
     // Setup the atomic running flag for shutdown
@@ -29,11 +33,10 @@ fn main() {
     // Shared state for packet counts
     let packet_counts = Arc::new(Mutex::new(HashMap::<PacketType, usize>::new()));
 
-    println!("Capturing on interface... Press Ctrl+C to stop and see summary");
-
     // Capture loop: runs while running flag is true
     while running.load(Ordering::SeqCst) {
-        if let Ok(packet) = cap.next_packet() {
+    match cap.next_packet() {
+        Ok(packet) => {
             match parse_and_print_packet(&packet.data) {
                 Ok(ptype) => {
                     let mut counts = packet_counts.lock().unwrap();
@@ -41,11 +44,17 @@ fn main() {
                 }
                 Err(err) => eprintln!("Error parsing packet: {}", err),
             }
-        } else {
-            // Sleep briefly to avoid busy waiting if no packet available
+        }
+        Err(pcap::Error::TimeoutExpired) => {
+            // No packet available yet, just continue looping
             thread::sleep(time::Duration::from_millis(10));
         }
-    }
+        Err(err) => {
+            eprintln!("Error reading packet: {}", err);
+            thread::sleep(time::Duration::from_millis(10));
+        }
+    } // match
+} // while
 
     // After Ctrl+C triggered, print summary and exit
     print_packet_summary(Arc::clone(&packet_counts));

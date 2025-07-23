@@ -1,3 +1,4 @@
+// src/ui/device.rs
 use pcap::Device;
 use std::io::{self, Write};
 
@@ -6,7 +7,7 @@ pub fn print_device_list(devices: &[Device]) {
     for (i, dev) in devices.iter().enumerate() {
         println!("  [{}] {}", i, dev.name);
     }
-} // print_device_list
+}
 
 pub fn prompt_device_selection(devices: &[Device]) -> usize {
     loop {
@@ -30,5 +31,5 @@ pub fn prompt_device_selection(devices: &[Device]) -> usize {
             Ok(index) if index < devices.len() => return index,
             _ => eprintln!("Invalid selection"),
         }
-    } // loop
-} // prompt_device_selection
+    }
+}
