@@ -16,6 +16,7 @@ pub fn prompt_for_bpf_filter(interface_name: &str) -> Option<String> {
             ("ARP traffic", "arp"),
             ("Port 80 (HTTP)", "port 80"),
             ("Port 443 (HTTPS)", "port 443"),
+            ("DNS traffic", "port 53"),
         ]);
     } else {
         filters.push(("Loopback-only traffic (e.g. local apps)", "ip and src net 127.0.0.1"));
@@ -80,4 +81,4 @@ pub fn prompt_for_bpf_filter(interface_name: &str) -> Option<String> {
 
         eprintln!("Invalid selection. Please try again.");
     }
-} // prompt_for_bpf_filter
+}
