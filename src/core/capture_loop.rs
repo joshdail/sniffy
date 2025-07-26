@@ -26,3 +26,17 @@ pub fn reinitialize_capture(device_name: &str) -> Result<Capture<pcap::Active>, 
     open_device_capture(&device)
         .map_err(|e| format!("Failed to open device {}: {}", device.name, e))
 }
+
+/// Applies a BPF filter string to the given active capture session.
+/// Returns Ok(()) on success, or an error string on failure.
+pub fn apply_bpf_filter(
+    cap: &mut pcap::Capture<pcap::Active>,
+    filter: &str,
+) -> Result<(), String> {
+    if filter.trim().is_empty() {
+        return Ok(()); // No filter to apply
+    }
+
+    cap.filter(filter, true)
+        .map_err(|e| format!("Failed to apply BPF filter '{}': {}", filter, e))
+}

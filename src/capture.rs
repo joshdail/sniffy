@@ -1,5 +1,4 @@
 use pcap::{Capture, Device};
-use crate::ui::filter::QuitError;
 
 /// Opens a packet capture session on the given device with non-blocking mode enabled.
 ///

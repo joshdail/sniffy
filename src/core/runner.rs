@@ -3,7 +3,7 @@ use std::{
     io::{self, Write},
     sync::{
         atomic::Ordering,
-        mpsc::{self, Receiver, Sender},
+        mpsc::Sender,
         Arc, Mutex,
     },
     thread,
@@ -14,17 +14,6 @@ use clap::Error;
 use pcap;
 use crate::cli::CliArgs;
 use crate::packet::{parse_packet, PacketType, PacketInfo};
-use crate::ui::tui::log::{display_packet_info, print_final_summary};
-
-/// Runs a separate thread that receives parsed packet info from a channel
-/// and prints/logs the info, throttling output to avoid flooding terminal/UI.
-fn start_packet_display_thread(rx: Receiver<PacketInfo>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        while let Ok(packet_info) = rx.recv() {
-            display_packet_info(&packet_info);
-        }
-    })
-}
 
 pub fn setup_savefile(
     args: &CliArgs,
@@ -71,17 +60,8 @@ pub fn run_packet_loop(
     mut savefile: Option<pcap::Savefile>,
     packet_counts: Arc<Mutex<HashMap<PacketType, usize>>>,
     debug_enabled: bool,
+    tx_gui: Option<Sender<PacketInfo>>,
 ) -> Result<(), Error> {
-    // Channel for sending parsed packet info to display thread
-    let (tx, rx): (Sender<PacketInfo>, Receiver<PacketInfo>) = mpsc::channel();
-
-    // Spawn the display thread only if debug is enabled
-    let display_handle = if debug_enabled {
-        Some(start_packet_display_thread(rx))
-    } else {
-        None
-    };
-
     while running.load(Ordering::SeqCst) {
         let packet_data = {
             let mut guard = match cap.lock() {
@@ -101,7 +81,6 @@ pub fn run_packet_loop(
                     Some(packet.data.to_vec())
                 }
                 Err(pcap::Error::TimeoutExpired) => {
-                    // Yield instead of sleep for better responsiveness
                     thread::yield_now();
                     None
                 }
@@ -116,12 +95,10 @@ pub fn run_packet_loop(
         if let Some(data) = packet_data {
             match parse_packet(&data) {
                 Ok(info) => {
-                    if debug_enabled {
-                        // Send parsed packet info to display thread
-                        if let Err(e) = tx.send(info.clone()) {
-                            eprintln!("Packet display thread has stopped: {}", e);
-                        }
+                    if let Some(gui_sender) = &tx_gui {
+                        let _ = gui_sender.send(info.clone());
                     }
+
                     if let Ok(mut counts) = packet_counts.lock() {
                         *counts.entry(info.packet_type.clone()).or_insert(0) += 1;
                     } else {
@@ -135,16 +112,6 @@ pub fn run_packet_loop(
         }
     }
 
-    // Close the sender so display thread will exit
-    drop(tx);
-
-    if let Some(handle) = display_handle {
-        if let Err(e) = handle.join() {
-            eprintln!("Packet display thread panicked: {:?}", e);
-        }
-    }
-
-    print_final_summary(packet_counts);
     Ok(())
 }
 
