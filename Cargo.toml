@@ -12,4 +12,3 @@ crossterm = "0.27"
 lazy_static = "1.4"
 clap = { version = "4", features = ["derive"] }
 eframe = "0.32.0"
-egui = "0.32.0"

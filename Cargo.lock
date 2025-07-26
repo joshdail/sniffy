@@ -2730,7 +2730,6 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "eframe",
- "egui",
  "lazy_static",
  "pcap",
  "ratatui",

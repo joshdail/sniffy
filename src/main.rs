@@ -4,6 +4,8 @@ mod packet;
 mod gui;
 mod cli;
 
+use eframe::egui;
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
