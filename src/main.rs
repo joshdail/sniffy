@@ -4,129 +4,109 @@ mod packet;
 mod ui;
 mod cli;
 
-extern crate lazy_static;
-
 use clap::Parser;
-use std::io::{self, Write};
 
 use crate::cli::CliArgs;
-use crate::core::capture_loop::initialize_capture;
+use crate::core::runner::{setup_savefile, run_packet_loop};
 use crate::core::signal::setup_ctrlc_handler;
-use crate::packet::{parse_packet, PacketType};
-use crate::ui::tui::{initialize_tui, display_packet_info, print_final_summary, spawn_input_handler, start_ui_thread};
+use crate::packet::PacketType;
+use crate::ui::tui::input::spawn_input_handler;
+use crate::ui::tui::log::print_final_summary;
+use crate::ui::tui::render::start_ui_thread;
+use crate::ui::tui::state::{UiState, UiMode};
+use crate::ui::device::get_available_devices;
 
-use pcap;
+use pcap::Capture;
+
 use std::{
     collections::HashMap,
     process,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::AtomicBool,
         Arc, Mutex,
     },
-    thread,
-    time,
 };
 
 fn main() {
-    // Parse CLI args
     let args = CliArgs::parse();
-
-    // Shared shutdown flag
+    // TODO: Wire debug_enabled as a CLI arg
+    let debug_enabled = false;
     let running = Arc::new(AtomicBool::new(true));
     setup_ctrlc_handler(Arc::clone(&running));
 
-    // Open pcap capture session
-    let mut cap = match initialize_capture() {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("Error initializing capture: {}", err);
+    // Safely fetch device list up front
+    let devices = match get_available_devices() {
+        Ok(devs) if !devs.is_empty() => devs,
+        Ok(_) => {
+            eprintln!("❌ No interfaces found.");
+            return;
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to list interfaces: {}", e);
             return;
         }
     };
 
-    // Determine export option
-    let export_enabled = if let Some(file) = args.export.clone() {
-        !file.is_empty()
-    } else {
-        // Prompt user
-        print!("Do you want to export the capture to a PCAP file? (y/N): ");
-        io::stdout().flush().unwrap();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
-    };
-
-    // Setup PCAP savefile if enabled
-    let mut savefile = if export_enabled {
-        let filename = if let Some(file) = args.export.clone() {
-            if file.is_empty() {
-                "capture.pcap".to_string()
-            } else {
-                file
-            }
-        } else {
-            "capture.pcap".to_string()
-        };
-
-        match cap.savefile(&filename) {
-            Ok(sf) => {
-                println!("Exporting packets to {}", filename);
-                Some(sf)
-            }
-            Err(e) => {
-                eprintln!("Failed to create savefile {}: {}", filename, e);
-                None
-            }
+    // Attempt to open a dummy session to pass to the capture loop
+    let dummy_cap = match Capture::from_device(devices[0].as_str()) {
+        Ok(dev) => dev.promisc(true).snaplen(65535).open(),
+        Err(e) => {
+            eprintln!("❌ Failed to create capture for '{}': {}", devices[0], e);
+            return;
         }
-    } else {
-        None
     };
 
-    // Initialize terminal UI mode (raw + alt screen)
-    if let Err(e) = initialize_tui() {
-        eprintln!("Failed to initialize TUI: {}", e);
-        return;
-    }
+    let dummy_cap = match dummy_cap {
+        Ok(capture) => capture,
+        Err(e) => {
+            eprintln!("❌ Failed to open capture: {}", e);
+            return;
+        }
+    };
 
-    // Track packet counts
+    let cap = Arc::new(Mutex::new(dummy_cap));
+    let savefile = setup_savefile(&args, &cap);
     let packet_counts = Arc::new(Mutex::new(HashMap::<PacketType, usize>::new()));
 
-    // Spawn input handler thread to listen for 'q' key
-    spawn_input_handler(Arc::clone(&running));
-    // Spawn UI drawing thread
-    start_ui_thread(Arc::clone(&running), Arc::clone(&packet_counts));
-
-    // Main packet capture loop
-    while running.load(Ordering::SeqCst) {
-        match cap.next_packet() {
-            Ok(packet) => {
-                match parse_packet(&packet.data) {
-                    Ok(info) => {
-                        display_packet_info(&info);
-
-                        let mut counts = packet_counts.lock().unwrap();
-                        *counts.entry(info.packet_type.clone()).or_insert(0) += 1;
-                    }
-                    Err(e) => eprintln!("Parse error: {}", e),
-                }
-
-                // Write packet to savefile if enabled
-                if let Some(sf) = &mut savefile {
-                    sf.write(&packet);
-                }
-            }
-            Err(pcap::Error::TimeoutExpired) => {
-                thread::sleep(time::Duration::from_millis(10));
-            }
-            Err(e) => {
-                eprintln!("Capture error: {}", e);
-                thread::sleep(time::Duration::from_millis(10));
-            }
+    // Initial UI state with DeviceMenu or fallback Capture mode
+    let initial_mode = if !devices.is_empty() {
+        UiMode::DeviceMenu {
+            options: devices,
+            selected: 0,
         }
+    } else {
+        UiMode::Capture
+    };
+
+    let ui_state = Arc::new(Mutex::new(UiState {
+        mode: initial_mode,
+        error_msg: Some("No suitable network interfaces found.".to_string()),
+        info_msg: None,
+    }));
+
+    let input_handle = spawn_input_handler(
+        Arc::clone(&running),
+        Arc::clone(&cap),
+        Arc::clone(&ui_state),
+    );
+
+    let ui_handle = start_ui_thread(
+        Arc::clone(&running),
+        Arc::clone(&packet_counts),
+        Arc::clone(&ui_state),
+    );
+
+    if let Err(e) = run_packet_loop(running.clone(), cap, savefile, Arc::clone(&packet_counts), debug_enabled) {
+        eprintln!("❌ Packet loop error: {}", e);
     }
 
-    // Clean up and print summary (UI thread already cleaned terminal)
-    print_final_summary(packet_counts);
+    if let Err(e) = input_handle.join() {
+        eprintln!("⚠️ Input thread panicked: {:?}", e);
+    }
+    if let Err(e) = ui_handle.join() {
+        eprintln!("⚠️ UI thread panicked: {:?}", e);
+    }
 
+    print_final_summary(packet_counts);
     process::exit(0);
 }

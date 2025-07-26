@@ -40,7 +40,7 @@ impl fmt::Display for PacketType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PacketInfo {
     pub packet_type: PacketType,
     pub src_mac: Option<[u8; 6]>,

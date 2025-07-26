@@ -1,35 +1,28 @@
-// src/core/capture_loop.rs
-
-use crate::capture::{open_device_capture, prompt_and_apply_bpf_filter};
-use crate::ui::device::{print_device_list, prompt_device_selection};
+use crate::capture::open_device_capture;
 use pcap::{Capture, Device};
 
-/// Initializes and returns an active packet capture session for a selected device.
+/// Initializes and returns a list of available capture devices.
+/// Used for populating the TUI device selector.
+pub fn get_available_devices() -> Result<Vec<Device>, String> {
+    Device::list().map_err(|e| format!("Failed to list devices: {}", e))
+}
+
+/// Opens an active capture session for a given device name.
+/// Reinitializes a capture session for the given device name.
+/// Used when user selects a different device from the TUI.
 ///
-/// Handles device selection and BPF filtering.
-pub fn initialize_capture() -> Result<Capture<pcap::Active>, String> {
+/// # Returns
+/// A new `Capture<pcap::Active>` on success, or a `String` error message.
+pub fn reinitialize_capture(device_name: &str) -> Result<Capture<pcap::Active>, String> {
     let devices = Device::list()
         .map_err(|e| format!("Failed to list devices: {}", e))?;
 
-    if devices.is_empty() {
-        return Err("No capture devices found".into());
-    }
+    let device = devices
+        .into_iter()
+        .find(|d| d.name == device_name)
+        .ok_or_else(|| format!("Device '{}' not found", device_name))?;
 
-    print_device_list(&devices);
-    let selected_index = prompt_device_selection(&devices);
-    let device = &devices[selected_index];
-
-    println!("Using device: {}", device.name);
-
-    let mut cap = open_device_capture(device)
-        .map_err(|e| format!("Failed to open device {}: {}", device.name, e))?;
-
-    prompt_and_apply_bpf_filter(&mut cap, &device.name);
-
-    println!(
-        "Capturing on interface {}... Press Ctrl+C to stop and see summary",
-        device.name
-    );
-
-    Ok(cap)
+    // Do not use println! inside TUI mode
+    open_device_capture(&device)
+        .map_err(|e| format!("Failed to open device {}: {}", device.name, e))
 }

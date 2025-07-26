@@ -1,35 +1,15 @@
-// src/ui/device.rs
-use pcap::Device;
+use pcap::{Device, Error as PcapError};
+use std::error::Error;
 use std::io::{self, Write};
+use crate::ui::filter::QuitError; // Reuse shared quit signal type
 
-pub fn print_device_list(devices: &[Device]) {
-    println!("Available interfaces:");
-    for (i, dev) in devices.iter().enumerate() {
-        println!("  [{}] {}", i, dev.name);
-    }
-}
-
-pub fn prompt_device_selection(devices: &[Device]) -> usize {
-    loop {
-        print!("Select an interface by number (or 'q' to quit): ");
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input).is_err() {
-            eprintln!("Failed to read input");
-            continue;
-        }
-
-        let input = input.trim();
-
-        if input.eq_ignore_ascii_case("q") {
-            println!("Quitting");
-            std::process::exit(0);
-        }
-
-        match input.parse::<usize>() {
-            Ok(index) if index < devices.len() => return index,
-            _ => eprintln!("Invalid selection"),
-        }
-    }
+/// Returns all non-loopback device names.
+pub fn get_available_devices() -> Result<Vec<String>, PcapError> {
+    let devices = Device::list()?;
+    let filtered = devices
+        .into_iter()
+        .filter(|d| !d.name.contains("lo") && !d.name.contains("Loopback"))
+        .map(|d| d.name)
+        .collect();
+    Ok(filtered)
 }
