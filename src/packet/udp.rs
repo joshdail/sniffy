@@ -1,21 +1,43 @@
-// src/packet/udp.rs
+use super::{dns::parse_dns_queries, PacketInfo, PacketType};
 
-/// Parses a UDP header (minimum 8 bytes).
+/// Parses the UDP layer and updates the provided PacketInfo.
 ///
 /// # Arguments
-/// * `header` - A byte slice containing the UDP header (at least 8 bytes)
+/// * `data` - The UDP segment (from IP payload)
+/// * `info` - Mutable reference to the PacketInfo to populate
 ///
 /// # Returns
-/// * `Ok((src_port, dst_port, length))` on success
-/// * `Err(&'static str)` on failure due to insufficient length
-pub fn parse_udp_header(header: &[u8]) -> Result<(u16, u16, u16), &'static str> {
-    if header.len() < 8 {
-        return Err("UDP header too short");
+/// * `Ok(())` if successful
+/// * `Err(&'static str)` on failure
+pub fn parse_udp(data: &[u8], info: &mut PacketInfo) -> Result<(), &'static str> {
+    if data.len() < 8 {
+        return Err("UDP packet too short");
     }
 
-    let src_port = u16::from_be_bytes([header[0], header[1]]);
-    let dst_port = u16::from_be_bytes([header[2], header[3]]);
-    let length   = u16::from_be_bytes([header[4], header[5]]); // total length incl. header + data
+    let src_port = u16::from_be_bytes([data[0], data[1]]);
+    let dst_port = u16::from_be_bytes([data[2], data[3]]);
+    let udp_len  = u16::from_be_bytes([data[4], data[5]]); // includes header
 
-    Ok((src_port, dst_port, length))
+    info.packet_type = PacketType::UDP;
+    info.src_port = Some(src_port);
+    info.dst_port = Some(dst_port);
+
+    // Only parse if length is valid
+    if udp_len as usize > data.len() {
+        return Err("UDP length field exceeds packet size");
+    }
+
+    let payload = &data[8..udp_len as usize];
+
+    // DNS detection: check if port 53 is involved
+    if src_port == 53 || dst_port == 53 {
+        if let Ok(queries) = parse_dns_queries(payload) {
+            if !queries.is_empty() {
+                info.packet_type = PacketType::DNS;
+                info.dns_queries = Some(queries);
+            }
+        }
+    }
+
+    Ok(())
 }

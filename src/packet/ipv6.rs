@@ -37,13 +37,8 @@ pub fn parse_ipv6(payload: &[u8], info: &mut PacketInfo) -> Result<(), &'static 
             info.tcp_flags = Some(flags);
         }
         17 => { // UDP
-            if payload.len() < 40 + 8 {
-                return Err("UDP header too short");
-            }
-            let (src_port, dst_port, _length) = crate::packet::udp::parse_udp_header(&payload[40..40 + 8])?;
-            info.src_port = Some(src_port);
-            info.dst_port = Some(dst_port);
-            // UDP/DNS logic in udp.rs sets packet_type
+            let udp_payload = &payload[40..];
+            crate::packet::udp::parse_udp(udp_payload, info)?;
         }
         _ => {
             info.packet_type = PacketType::IPv6;
@@ -51,4 +46,4 @@ pub fn parse_ipv6(payload: &[u8], info: &mut PacketInfo) -> Result<(), &'static 
     }
 
     Ok(())
-} // parse_ipv6
+}

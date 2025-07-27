@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::{self, Write},
     sync::{
         atomic::Ordering,
         mpsc::Sender,
@@ -12,32 +11,18 @@ use std::{
 
 use clap::Error;
 use pcap;
-use crate::cli::CliArgs;
 use crate::packet::{parse_packet, PacketType, PacketInfo};
 
 pub fn setup_savefile(
-    args: &CliArgs,
     cap: &Arc<Mutex<pcap::Capture<pcap::Active>>>,
+    filename: &str,
 ) -> Option<pcap::Savefile> {
-    let export_enabled = if let Some(file) = args.export.as_ref() {
-        !file.is_empty()
-    } else {
-        prompt_yes_no("Do you want to export the capture to a PCAP file? (y/N):")
-    };
-
-    if !export_enabled {
+    if filename.trim().is_empty() {
         return None;
     }
 
-    let filename = args
-        .export
-        .as_ref()
-        .filter(|f| !f.is_empty())
-        .cloned()
-        .unwrap_or_else(|| "capture.pcap".to_string());
-
     match cap.lock() {
-        Ok(cap_guard) => match cap_guard.savefile(&filename) {
+        Ok(cap_guard) => match cap_guard.savefile(filename) {
             Ok(sf) => {
                 println!("Exporting packets to {}", filename);
                 Some(sf)
@@ -52,7 +37,7 @@ pub fn setup_savefile(
             None
         }
     }
-}
+} // setup_savefile
 
 pub fn run_packet_loop(
     running: Arc<std::sync::atomic::AtomicBool>,
@@ -113,12 +98,4 @@ pub fn run_packet_loop(
     }
 
     Ok(())
-}
-
-fn prompt_yes_no(message: &str) -> bool {
-    print!("{message} ");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }

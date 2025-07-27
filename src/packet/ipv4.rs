@@ -6,7 +6,7 @@ pub fn parse_ipv4(payload: &[u8], info: &mut PacketInfo) -> Result<(), &'static 
         return Err("IPv4 header too short");
     }
 
-    let ihl = payload[0] & 0x0F; // Internet Header Length in 32-bit words
+    let ihl = payload[0] & 0x0F;
     let ip_header_len = (ihl as usize) * 4;
 
     if payload.len() < ip_header_len {
@@ -32,13 +32,8 @@ pub fn parse_ipv4(payload: &[u8], info: &mut PacketInfo) -> Result<(), &'static 
             info.tcp_flags = Some(flags);
         }
         17 => { // UDP
-            if payload.len() < ip_header_len + 8 {
-                return Err("UDP header too short");
-            }
-            let (src_port, dst_port, _length) = crate::packet::udp::parse_udp_header(&payload[ip_header_len..ip_header_len + 8])?;
-            info.src_port = Some(src_port);
-            info.dst_port = Some(dst_port);
-            // UDP/DNS logic in udp.rs sets packet_type
+            let udp_payload = &payload[ip_header_len..];
+            crate::packet::udp::parse_udp(udp_payload, info)?;
         }
         _ => {
             info.packet_type = PacketType::IPv4;
@@ -46,4 +41,4 @@ pub fn parse_ipv4(payload: &[u8], info: &mut PacketInfo) -> Result<(), &'static 
     }
 
     Ok(())
-} // parse_ipv4
+}

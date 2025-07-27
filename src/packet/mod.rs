@@ -5,15 +5,9 @@ mod udp;
 mod dns;
 mod tcp;
 
-pub use ethernet::*;
-pub use ipv4::*;
-pub use ipv6::*;
 pub use tcp::*;
-pub use udp::*;
-pub use dns::*;
 
 use std::fmt;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub enum PacketType {

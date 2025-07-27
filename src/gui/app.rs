@@ -6,52 +6,20 @@ use std::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
-    thread,
+    thread::{self, JoinHandle},
 };
 
 use crate::core::capture_loop::{get_available_devices, reinitialize_capture, apply_bpf_filter};
-use crate::core::runner::run_packet_loop;
+use crate::core::runner::{setup_savefile, run_packet_loop};
 use crate::core::signal::setup_ctrlc_handler;
 use crate::packet::{PacketInfo, PacketType};
-
-/// Represents the kind of interface detected for BPF filtering suggestions.
-enum InterfaceKind {
-    Loopback,
-    Ethernet,
-    Unknown,
-}
-
-fn detect_interface_type(name: &str) -> InterfaceKind {
-    if name.contains("lo") {
-        InterfaceKind::Loopback
-    } else if name.contains("en") || name.contains("eth") {
-        InterfaceKind::Ethernet
-    } else {
-        InterfaceKind::Unknown
-    }
-}
-
-fn suggested_filters(interface: &str) -> Vec<String> {
-    match detect_interface_type(interface) {
-        InterfaceKind::Loopback => vec![
-            "tcp".into(),
-            "udp".into(),
-            "port 53".into(),
-            "ip".into(),
-            "icmp".into(),
-        ],
-        InterfaceKind::Ethernet => vec![
-            "tcp".into(),
-            "udp".into(),
-            "port 80".into(),
-            "port 443".into(),
-            "port 53".into(),
-            "ip".into(),
-            "icmp".into(),
-        ],
-        InterfaceKind::Unknown => vec!["ip".into(), "tcp".into()],
-    }
-}
+use crate::gui::components::{
+    interface_selector::interface_selector,
+    filter_input::filter_input,
+    stats_panel::stats_panel,
+    packet_log::packet_log,
+    gui_state::*
+};
 
 /// The main GUI app for Sniffy
 pub struct SniffyApp {
@@ -59,13 +27,14 @@ pub struct SniffyApp {
     packet_rx: Receiver<PacketInfo>,
     packet_tx: Sender<PacketInfo>,
     packet_counts: Arc<Mutex<HashMap<PacketType, usize>>>,
-    log: Arc<Mutex<Vec<String>>>,
+    log: Arc<Mutex<Vec<PacketInfo>>>,
     selected_interface: Option<String>,
     available_interfaces: Vec<String>,
     selected_filter: Option<String>,
     save_pcap: bool,
     pcap_filename: String,
-    capture_started: bool,
+    capture_state: CaptureState,
+    capture_thread_handle: Option<JoinHandle<()>>
 }
 
 impl SniffyApp {
@@ -77,13 +46,12 @@ impl SniffyApp {
 
         setup_ctrlc_handler(running.clone());
 
-       let available_interfaces = get_available_devices()
+        let available_interfaces = get_available_devices()
             .map(|list| list.into_iter().map(|d| d.name).collect())
             .unwrap_or_else(|e| {
                 eprintln!("Failed to load interfaces: {e}");
                 vec![]
             });
-
 
         SniffyApp {
             running,
@@ -96,12 +64,13 @@ impl SniffyApp {
             save_pcap: false,
             pcap_filename: "capture.pcap".into(),
             available_interfaces,
-            capture_started: false,
+            capture_state: CaptureState::Idle,
+            capture_thread_handle: None
         }
     }
 
     fn start_capture(&mut self) {
-        if self.capture_started {
+        if self.capture_state == CaptureState::Capturing {
             return;
         }
 
@@ -111,12 +80,26 @@ impl SniffyApp {
         };
 
         let bpf_filter = self.selected_filter.clone().unwrap_or_default();
+
+        // Set running = true, in case it was false after a stop
+        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+
         let running = self.running.clone();
         let packet_counts = self.packet_counts.clone();
-        let log = self.log.clone();
+        // let log = self.log.clone();
         let tx = self.packet_tx.clone();
 
-        thread::spawn(move || {
+        let savefile_name = if self.save_pcap {
+            rfd::FileDialog::new()
+                .add_filter("PCAP file ", &["pcap"])
+                .set_file_name(&self.pcap_filename)
+                .save_file()
+                .map(|path| path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        let handle = thread::spawn(move || {
             let cap = match reinitialize_capture(&device_name) {
                 Ok(c) => Arc::new(Mutex::new(c)),
                 Err(e) => {
@@ -132,7 +115,9 @@ impl SniffyApp {
                 }
             }
 
-            let savefile = None;
+            let savefile = savefile_name.and_then(|filename| {
+                setup_savefile(&cap, &filename)
+            });
             let debug = false;
 
             if let Err(e) = run_packet_loop(
@@ -147,21 +132,33 @@ impl SniffyApp {
             }
         });
 
-        self.capture_started = true;
-    }
-}
+        self.capture_thread_handle = Some(handle);
+        self.capture_state = CaptureState::Capturing;
+    } // start_capture
+
+    fn stop_capture(&mut self) {
+        if self.capture_state != CaptureState::Capturing {
+            return;
+        }
+
+        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        if let Some(handle) = self.capture_thread_handle.take() {
+            if let Err(e) = handle.join() {
+                eprintln!("Failed to join capture thread: {:?}", e);
+            }
+        }
+
+        self.capture_state = CaptureState::Idle;
+    } // stop_capture
+
+} // impl SniffyApp
 
 impl eframe::App for SniffyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(packet) = self.packet_rx.try_recv() {
             if let Ok(mut log) = self.log.lock() {
-                let line = format!(
-                    "[{} -> {}] {:?}",
-                    packet.src_ip.unwrap_or_else(|| "??".into()),
-                    packet.dst_ip.unwrap_or_else(|| "??".into()),
-                    packet.packet_type
-                );
-                log.push(line);
+                log.push(packet.clone());
             }
 
             if let Ok(mut counts) = self.packet_counts.lock() {
@@ -172,46 +169,11 @@ impl eframe::App for SniffyApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.heading("Sniffy - GUI Packet Sniffer");
 
-            ui.horizontal(|ui| {
-                ui.label("Interface:");
-                egui::ComboBox::from_id_salt("interface_combo")
-                    .selected_text(
-                        self.selected_interface
-                            .as_ref()
-                            .map(|s| s.as_str())
-                            .unwrap_or("Select interface"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for iface in &self.available_interfaces {
-                            ui.selectable_value(
-                                &mut self.selected_interface,
-                                Some(iface.clone()),
-                                iface,
-                            );
-                        }
-                    });
-            });
+            interface_selector(ui, &self.available_interfaces, &mut self.selected_interface);
 
             if let Some(iface) = &self.selected_interface {
                 let filters = suggested_filters(iface);
-                ui.horizontal(|ui| {
-                    ui.label("BPF Filter:");
-                    egui::ComboBox::from_id_salt("bpf_filter_combo")
-                        .selected_text(
-                            self.selected_filter
-                                .as_deref()
-                                .unwrap_or("Select filter"),
-                        )
-                        .show_ui(ui, |ui| {
-                            for f in &filters {
-                                ui.selectable_value(
-                                    &mut self.selected_filter,
-                                    Some(f.clone()),
-                                    f,
-                                );
-                            }
-                        });
-                });
+                filter_input(ui, &filters, &mut self.selected_filter);
             }
 
             ui.horizontal(|ui| {
@@ -221,32 +183,23 @@ impl eframe::App for SniffyApp {
                 }
             });
 
+            if self.capture_state == CaptureState::Idle {
             if ui.button("Start Capture").clicked() {
                 self.start_capture();
+                }
+            } else {
+                if ui.button("Stop Capture").clicked() {
+                    self.stop_capture();
+                }
             }
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Captured Protocols:");
-                if let Ok(counts) = self.packet_counts.lock() {
-                    for (ptype, count) in counts.iter() {
-                        ui.label(format!("{}: {}", ptype, count));
-                    }
-                }
-            });
-
+            stats_panel(ui, &self.packet_counts);
             ui.separator();
-            ui.label("Live Packet Log:");
-            egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                if let Ok(log) = self.log.lock() {
-                    for line in log.iter().rev().take(100) {
-                        ui.label(line);
-                    }
-                }
-            });
+            packet_log(ui, &self.log);
         });
 
-        ctx.request_repaint(); // Smooth refresh
+        ctx.request_repaint();
     }
 }
